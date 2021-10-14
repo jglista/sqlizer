@@ -1,0 +1,7 @@
+package {{.TableName | ToLower}}
+
+type {{.TableName}} struct {
+	{{- range .Attributes}}
+		{{.Name}} {{.Type -}}
+	{{end}}
+}
