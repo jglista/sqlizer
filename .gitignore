@@ -1,0 +1,9 @@
+#Go-generated files (test output, debug output, etc...)
+out
+
+#IDE related files
+.vscode
+.idea
+
+# Binary
+sqlizer
