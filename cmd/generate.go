@@ -205,7 +205,7 @@ func readTable(cmd *cobra.Command) ([]Columns, error) {
 		return nil, err
 	}
 	if !dbExists {
-		return nil, errors.New("databaseG does not exist")
+		return nil, errors.New("database does not exist")
 	}
 
 	tableExists, err := checkTableExists(db, cmd)
