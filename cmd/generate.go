@@ -20,6 +20,7 @@ package cmd
 import (
 	"bytes"
 	"embed"
+	"errors"
 	"fmt"
 	"go/format"
 	"io/ioutil"
@@ -39,12 +40,21 @@ import (
 const (
 	mssqlVarChar  = "varchar"
 	mssqlNVarChar = "nvarchar"
+	mssqlChar     = "char"
 	mssqlInt      = "int"
 	mssqlFloat    = "float"
 	mssqlBit      = "bit"
 	mssqlTime     = "datetime"
 	mssqlBinary   = "binary"
 )
+
+type DatabaseExistsRow struct {
+	DatabaseExists bool `db:"DatabaseExists"`
+}
+
+type TableExistsRow struct {
+	TableExists bool `db:"TableExists"`
+}
 
 type Columns struct {
 	TableCatalog           string  `db:"TABLE_CATALOG"`
@@ -78,6 +88,7 @@ var generateTmpl embed.FS
 var mssqlTypeMap = map[string]string{
 	mssqlVarChar:  "string",
 	mssqlNVarChar: "string",
+	mssqlChar:     "string",
 	mssqlInt:      "int64",
 	mssqlFloat:    "float64",
 	mssqlBit:      "bool",
@@ -89,12 +100,11 @@ var mssqlTypeMap = map[string]string{
 var generateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate reads the structure of your database objects and generates go types.",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Long: `Using generate, you can lookup obejcts in your database and generate a Go type representing
+a table or a view. For example:
 
-Cobra is a CLI library for Go that empowers applications.e
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+sqlizer generate -d {YourDatabase} -t {YourTable}
+	`,
 	Run: func(cmd *cobra.Command, args []string) {
 		rows, err := readTable(cmd)
 		if err != nil {
@@ -116,6 +126,66 @@ to quickly create a Cobra application.`,
 	},
 }
 
+func checkDatabaseExists(db *sqlx.DB, cmd *cobra.Command) (bool, error) {
+	var dbExists []DatabaseExistsRow
+
+	err := db.Select(
+		&dbExists,
+		`
+			IF DB_ID(?) IS NOT NULL
+			BEGIN
+				SELECT 1 AS DatabaseExists;
+			END
+			ELSE
+			BEGIN
+				SELECT 0 AS DatabaseExists;
+			END
+		`,
+		cmd.Flag("database").Value.String(),
+	)
+	if err != nil {
+		return false, err
+	}
+	if !dbExists[0].DatabaseExists {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func checkTableExists(db *sqlx.DB, cmd *cobra.Command) (bool, error) {
+	var tableExists []TableExistsRow
+
+	err := db.Select(
+		&tableExists,
+		`
+			IF (
+				EXISTS (
+					SELECT *
+					FROM UserManagement.INFORMATION_SCHEMA.TABLES
+					WHERE TABLE_NAME = ?
+				)
+			)
+			BEGIN
+				SELECT 1 AS TableExists;
+			END
+			ELSE
+			BEGIN
+				SELECT 0 AS TableExists;
+			END
+		`,
+		cmd.Flag("table").Value.String(),
+	)
+	if err != nil {
+		return false, err
+	}
+	if !tableExists[0].TableExists {
+		return false, nil
+	}
+
+	return true, nil
+}
+
 func readTable(cmd *cobra.Command) ([]Columns, error) {
 	u := url.URL{
 		Scheme: "sqlserver",
@@ -130,6 +200,22 @@ func readTable(cmd *cobra.Command) ([]Columns, error) {
 	}
 	defer db.Close()
 
+	dbExists, err := checkDatabaseExists(db, cmd)
+	if err != nil {
+		return nil, err
+	}
+	if !dbExists {
+		return nil, errors.New("databaseG does not exist")
+	}
+
+	tableExists, err := checkTableExists(db, cmd)
+	if err != nil {
+		return nil, err
+	}
+	if !tableExists {
+		return nil, errors.New("table does not exist")
+	}
+
 	t := cmd.Flag("table").Value.String()
 	var rows []Columns
 	// TODO: Don't use string building to inject the database name, this is a SQL injection risk.
@@ -139,7 +225,6 @@ func readTable(cmd *cobra.Command) ([]Columns, error) {
 		t,
 	)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "While creating query: %s", err.Error())
 		return nil, err
 	}
 
@@ -234,4 +319,6 @@ func init() {
 	rootCmd.AddCommand(generateCmd)
 	generateCmd.Flags().StringP("database", "d", "", "the database name")
 	generateCmd.Flags().StringP("table", "t", "", "the target table")
+	generateCmd.MarkFlagRequired("database")
+	generateCmd.MarkFlagRequired("table")
 }

@@ -31,12 +31,10 @@ var cfgFile string
 var rootCmd = &cobra.Command{
 	Use:   "sqlizer",
 	Short: "sqlizer generates Go types from your SQL Server database objects",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
-
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+	Long: `sqlizer provides a variety of methods for generating types from your database objects.
+sqlizer can generate types for both tables and views. For a full list of all of the subcommands,
+run: sqlizer help
+	`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
