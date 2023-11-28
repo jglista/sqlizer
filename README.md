@@ -6,7 +6,7 @@ read a table's columns and produce a struct from the table.
 ## Install
 
 ```bash
-    go install github.com/jglista/sqlizer@v0.0.2
+    go install github.com/jglista/sqlizer@v0.0.3
 ```
 
 ## Configuration
