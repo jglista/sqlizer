@@ -18,88 +18,190 @@ limitations under the License.
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/AlecAivazis/survey/v2"
+	"github.com/jglista/sqlizer/internal/config"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
-// configCmd represents the config command
 var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage sqlizer config",
-	Long:  `config contains commands for quickly interacting with and changing your config`,
-	Run: func(cmd *cobra.Command, args []string) {
-		// TODO: Implement config command
+	Long:  `config contains commands for managing saved database connections`,
+}
+
+var configAddCmd = &cobra.Command{
+	Use:   "add",
+	Short: "Add a new database connection",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path, err := config.ConfigPath()
+		if err != nil {
+			return err
+		}
+
+		var name string
+		if err := survey.AskOne(&survey.Input{Message: "Connection name:"}, &name, survey.WithValidator(survey.Required)); err != nil {
+			return err
+		}
+
+		existing, listErr := config.List(path)
+		if listErr != nil {
+			return listErr
+		}
+		if _, exists := existing[name]; exists {
+			var overwrite bool
+			if err := survey.AskOne(&survey.Confirm{
+				Message: fmt.Sprintf("Connection %q already exists. Overwrite?", name),
+				Default: false,
+			}, &overwrite); err != nil {
+				return err
+			}
+			if !overwrite {
+				fmt.Fprintln(os.Stderr, "Aborted.")
+				return nil
+			}
+		}
+
+		var host, port, user, pass string
+		qs := []*survey.Question{
+			{Name: "host", Prompt: &survey.Input{Message: "Host:"}, Validate: survey.Required},
+			{Name: "port", Prompt: &survey.Input{Message: "Port:", Default: "1433"}, Validate: survey.Required},
+			{Name: "user", Prompt: &survey.Input{Message: "User:"}, Validate: survey.Required},
+			{Name: "pass", Prompt: &survey.Password{Message: "Password:"}},
+		}
+		answers := struct {
+			Host string
+			Port string
+			User string
+			Pass string
+		}{}
+		if err := survey.Ask(qs, &answers); err != nil {
+			return err
+		}
+		host, port, user, pass = answers.Host, answers.Port, answers.User, answers.Pass
+
+		conn := config.Connection{Host: host, Port: port, User: user, Pass: pass}
+		if err := config.Overwrite(path, name, conn); err != nil {
+			return err
+		}
+		fmt.Printf("Connection %q saved.\n", name)
+
+		var makeDefault bool
+		if err := survey.AskOne(&survey.Confirm{
+			Message: fmt.Sprintf("Set %q as the default connection?", name),
+			Default: false,
+		}, &makeDefault); err != nil {
+			return err
+		}
+		if makeDefault {
+			if err := config.SetDefault(path, name); err != nil {
+				return err
+			}
+			fmt.Printf("%q set as default.\n", name)
+		}
+		return nil
 	},
 }
 
-type initAnswers struct {
-	Host         string
-	Port         int
-	DatabaseName string
-	User         string
-	Password     string
+var configListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all saved connections",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		path, err := config.ConfigPath()
+		if err != nil {
+			return err
+		}
+
+		connections, err := config.List(path)
+		if err != nil {
+			return err
+		}
+		defaultName, err := config.GetDefault(path)
+		if err != nil {
+			return err
+		}
+
+		if len(connections) == 0 {
+			fmt.Println("No connections saved. Run `sqlizer config add` to add one.")
+			return nil
+		}
+
+		names := make([]string, 0, len(connections))
+		for n := range connections {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+
+		for _, n := range names {
+			conn := connections[n]
+			marker := "  "
+			if n == defaultName {
+				marker = "* "
+			}
+			fmt.Printf("%s%s  %s:%s\n", marker, n, conn.Host, conn.Port)
+		}
+		return nil
+	},
 }
 
-var initCmd = &cobra.Command{
-	Use:   "init",
-	Short: "initializes sqlizer config",
-	Long:  "",
-	Run: func(cmd *cobra.Command, args []string) {
-		aws := initAnswers{}
-		qs := []*survey.Question{
-			{
-				Name: "Host",
-				Prompt: &survey.Input{
-					Message: "Enter the host name for your SQL Server instance",
-				},
-			},
-			{
-				Name: "Port",
-				Prompt: &survey.Input{
-					Message: "Enter the port number for your SQL Server instance",
-				},
-			},
-			{
-				Name: "User",
-				Prompt: &survey.Input{
-					Message: "Target database user?",
-				},
-			},
-			{
-				Name: "Password",
-				Prompt: &survey.Input{
-					Message: "Target database pass?",
-				},
-			},
-		}
-		survey.Ask(qs, &aws, nil)
-
-		viper.Set("server.host", aws.Host)
-		viper.Set("server.port", aws.Port)
-		viper.Set("server.user", aws.User)
-		viper.Set("server.pass", aws.Password)
-		err := viper.SafeWriteConfig()
+var configRemoveCmd = &cobra.Command{
+	Use:   "remove <name>",
+	Short: "Remove a saved connection",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		path, err := config.ConfigPath()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "While writing config: %s", err.Error())
+			return err
 		}
+
+		defaultName, err := config.GetDefault(path)
+		if err != nil {
+			return err
+		}
+
+		if err := config.Remove(path, name); err != nil {
+			return err
+		}
+		fmt.Printf("Connection %q removed.\n", name)
+
+		if name == defaultName {
+			fmt.Fprintf(os.Stderr, "Warning: %q was the default connection. Run `sqlizer config set-default <name>` to set a new default.\n", name)
+		}
+		return nil
+	},
+}
+
+var configSetDefaultCmd = &cobra.Command{
+	Use:   "set-default <name>",
+	Short: "Set the default connection",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := args[0]
+		path, err := config.ConfigPath()
+		if err != nil {
+			return err
+		}
+
+		if err := config.SetDefault(path, name); err != nil {
+			if errors.Is(err, config.ErrNotFound) {
+				return fmt.Errorf("connection %q not found; run `sqlizer config list` to see available connections", name)
+			}
+			return err
+		}
+		fmt.Printf("%q set as default.\n", name)
+		return nil
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(configCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// configCmd.PersistentFlags().String("foo", "", "A help for foo")
-	configCmd.AddCommand(initCmd)
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// configCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	configCmd.AddCommand(configAddCmd)
+	configCmd.AddCommand(configListCmd)
+	configCmd.AddCommand(configRemoveCmd)
+	configCmd.AddCommand(configSetDefaultCmd)
 }

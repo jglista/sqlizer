@@ -30,9 +30,9 @@ import (
 	"text/template"
 
 	_ "github.com/denisenkom/go-mssqldb"
+	"github.com/jglista/sqlizer/internal/config"
 	"github.com/jmoiron/sqlx"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"golang.org/x/tools/imports"
 )
 
@@ -99,7 +99,7 @@ var mssqlTypeMap = map[string]string{
 var generateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate reads the structure of your database objects and generates go types.",
-	Long: `Using generate, you can lookup obejcts in your database and generate a Go type representing
+	Long: `Using generate, you can lookup objects in your database and generate a Go type representing
 a table or a view. For example:
 
 sqlizer generate -d {YourDatabase} -t {YourTable}
@@ -161,7 +161,7 @@ func checkTableExists(db *sqlx.DB, cmd *cobra.Command) (bool, error) {
 			IF (
 				EXISTS (
 					SELECT *
-					FROM UserManagement.INFORMATION_SCHEMA.TABLES
+					FROM INFORMATION_SCHEMA.TABLES
 					WHERE TABLE_NAME = ?
 				)
 			)
@@ -185,11 +185,39 @@ func checkTableExists(db *sqlx.DB, cmd *cobra.Command) (bool, error) {
 	return true, nil
 }
 
+func loadConnection(cmd *cobra.Command) (config.Connection, error) {
+	cfgPath, err := config.ConfigPath()
+	if err != nil {
+		return config.Connection{}, err
+	}
+
+	name, _ := cmd.Flags().GetString("connection")
+	if name == "" {
+		name, err = config.GetDefault(cfgPath)
+		if err != nil {
+			return config.Connection{}, err
+		}
+		if name == "" {
+			return config.Connection{}, errors.New("no connection specified and no default set; run `sqlizer config set-default <name>`")
+		}
+	}
+
+	return config.Get(cfgPath, name)
+}
+
 func readTable(cmd *cobra.Command) ([]Columns, error) {
+	conn, err := loadConnection(cmd)
+	if err != nil {
+		return nil, err
+	}
+
+	q := url.Values{}
+	q.Set("database", cmd.Flag("database").Value.String())
 	u := url.URL{
-		Scheme: "sqlserver",
-		User:   url.UserPassword(viper.GetString("server.user"), viper.GetString("server.pass")),
-		Host:   fmt.Sprintf("%s:%s", viper.GetString("server.host"), viper.GetString("server.port")),
+		Scheme:   "sqlserver",
+		User:     url.UserPassword(conn.User, conn.Pass),
+		Host:     fmt.Sprintf("%s:%s", conn.Host, conn.Port),
+		RawQuery: q.Encode(),
 	}
 
 	db, err := sqlx.Connect("mssql", u.String())
@@ -215,13 +243,11 @@ func readTable(cmd *cobra.Command) ([]Columns, error) {
 		return nil, errors.New("table does not exist")
 	}
 
-	t := cmd.Flag("table").Value.String()
 	var rows []Columns
-	// TODO: Don't use string building to inject the database name, this is a SQL injection risk.
 	err = db.Select(
 		&rows,
-		fmt.Sprintf("SELECT * FROM %s.INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=?", cmd.Flag("database").Value.String()),
-		t,
+		"SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=?",
+		cmd.Flag("table").Value.String(),
 	)
 	if err != nil {
 		return nil, err
@@ -279,8 +305,7 @@ func writeTypes(cmd *cobra.Command, fileBytes []byte) error {
 		fmt.Fprintf(os.Stderr, "While formatting imports: %s", err.Error())
 		return err
 	}
-	os.WriteFile(filePath, formatted, os.ModePerm)
-	if err != nil {
+	if err := os.WriteFile(filePath, formatted, os.ModePerm); err != nil {
 		fmt.Fprintf(os.Stderr, "While writing formatted file: %s", err.Error())
 		return err
 	}
@@ -318,6 +343,7 @@ func init() {
 	rootCmd.AddCommand(generateCmd)
 	generateCmd.Flags().StringP("database", "d", "", "the database name")
 	generateCmd.Flags().StringP("table", "t", "", "the target table")
+	generateCmd.Flags().StringP("connection", "c", "", "named connection to use (defaults to the configured default)")
 	generateCmd.MarkFlagRequired("database")
 	generateCmd.MarkFlagRequired("table")
 }
